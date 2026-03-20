@@ -1,99 +1,60 @@
-# Plan: Add Turtle Slow-Down Powerup
+# Plan: Head Tracking with Absolute Position
 
 ## Overview
 
-Add a collectible turtle-shaped powerup that halves ball speed for 4 seconds when collected. Follows the existing coin spawn/collection pattern across renderer.js, physics.js, main.js, and index.html.
+Switch head tracking from relative angular measurement (atan2 of eye landmark Y/X deltas) to absolute face horizontal position. The current `detectTilt()` computes head roll angle from eye corner vertical offset. The new approach uses the normalized X coordinate midpoint of the face (eye landmarks) to map head position directly to ball steering.
 
-## Codebase Analysis
+## Current Implementation
 
-- **Tech stack**: Pure static HTML+JS (ES modules), Three.js v0.183.2 via CDN importmap, served by nginx in Docker
-- **Key files**: `index.html` (HTML/CSS/UI), `js/main.js` (game loop, state), `js/physics.js` (ball physics, collision), `js/renderer.js` (Three.js scene, mesh generation, RNG), `js/tracker.js` (head tracking — DO NOT MODIFY)
-- **Coin pattern**: Generated in `renderer.js` via `generateCoins(rng)`, exported via `getCoins()`, collected in `physics.js` via distance check (`COIN_COLLECT_RADIUS = 0.8`), hidden via `hideCoin(idx)` called from `main.js` game loop
-- **Speed constants**: `FORWARD_SPEED = 2.0`, `MAX_SPEED = 6.0` in physics.js
-- **RNG**: Seeded via `Date.now()` in `generateLevel()`, deterministic `seededRandom()` function
+- **tracker.js**: `detectTilt()` computes `atan2(rightEye.y - leftEye.y, rightEye.x - leftEye.x)` — measures head roll angle in radians. The smoothed tilt value (~-0.3 to +0.3 radians in practice) is returned.
+- **physics.js**: `updateOnTrack()` computes `targetVx = tiltAngle * DIRECT_SENSITIVITY` (where `DIRECT_SENSITIVITY = 8.0`), then smoothly interpolates `ball.vx` toward this target. The ball moves laterally based on velocity, not position.
+- **main.js**: Calls `detectTilt(timestamp)` each frame, passes result to `updatePhysics(dt, tiltAngle, pitch)`. Calls `resetTilt()` on game reset.
 
 ## Technical Approach
 
-### 1. renderer.js — Turtle Mesh & Spawning
+### 1. Absolute Position Calculation (tracker.js)
 
-**Turtle mesh** (composite Three.js primitives, grouped under `THREE.Group`):
-- Body: `SphereGeometry` scaled flat (scaleY ~0.5), dark green `0x228B22`
-- Head: smaller `SphereGeometry`, positioned at front of body
-- 4 legs: short `CylinderGeometry` positioned at corners
-- Shell detail: slightly larger `SphereGeometry` with darker color on top
+MediaPipe face landmarks return normalized coordinates (0–1 range). The X midpoint of the left and right eye outer corners (`landmarks[33].x` and `landmarks[263].x`) gives the horizontal face center position. Since webcams mirror the image, moving your head left increases the landmark X value, so we negate: `position = -(midpointX - 0.5)` to get a centered value where physical left head movement → negative value.
 
-**Spawn logic** — new `generateTurtle(rng, obstacles)`:
-- Pick random Z between `SAFE_ZONE_Z + 5` and `TRACK_LENGTH/2 - 3`, avoiding obstacle Z ranges
-- Pick random X within track bounds (±halfTrack - 0.5)
-- Spawn exactly 1 turtle per run
-- Place at `COIN_Y` height (same as coins)
+**Calibration**: Use auto-calibration. On the first valid detection after game start (or reset), capture the current raw face X midpoint as `calibrationX`. Subsequent frames compute: `rawTilt = -(midpointX - calibrationX)`. This means the player's natural resting head position maps to 0 (center).
 
-**Exports to add**:
-- `getTurtle()` → returns `{ x, z }` or `null`
-- `hideTurtle()` → hides the mesh
-- Update `regenerateLevel()` to clean up turtle mesh
+Export a `calibrateCenter()` function that resets the calibration flag so the next detection frame recaptures the center offset. Call this from `main.js` at game start and on each game restart.
 
-### 2. physics.js — Collection & Speed Modifier
+### 2. Smoothing (tracker.js)
 
-**New state variables**:
-- `turtle` (position object or null)
-- `turtleCollected` (boolean)
-- `slowdownActive` (boolean)
-- `slowdownTimer` (float, seconds remaining)
-- `SLOWDOWN_DURATION = 4` (constant)
-- `TURTLE_COLLECT_RADIUS = 0.8`
+Keep `SMOOTHING_FACTOR = 0.7` (exponential moving average). Absolute position from landmarks is already fairly stable frame-to-frame, so the existing smoothing should work well. If anything, absolute position is *less* noisy than the atan2 angle, so 0.7 is appropriate.
 
-**In `initPhysics(config)`**: Accept `config.turtle`, reset slowdown state.
+### 3. Pitch Detection
 
-**In `updateOnTrack(dt)`**:
-- Check turtle proximity (same pattern as coins) → set `turtleCollected`, activate slowdown
-- Apply speed modifier: `effectiveForward = slowdownActive ? FORWARD_SPEED / 2 : FORWARD_SPEED`, `effectiveMax = slowdownActive ? MAX_SPEED / 2 : MAX_SPEED`
-- Decrement `slowdownTimer` by `dt`; when ≤ 0, deactivate
-- Re-collecting while active: reset timer to `SLOWDOWN_DURATION` (no further stacking)
-- Return `turtleCollected`, `slowdownActive`, `slowdownTimer` in result object
+Keep pitch detection angle-based (nose Y - forehead Y). The acceptance criteria explicitly allow this.
 
-**In `resetBall()`**: Clear all slowdown state.
+### 4. Sensitivity Tuning (physics.js)
 
-### 3. main.js — Wire Collection & UI Indicator
+The current `DIRECT_SENSITIVITY = 8.0` was tuned for radian-based tilt (~±0.3 range → ±2.4 velocity). With absolute position, the face midpoint offset will range roughly ±0.1 to ±0.2 in normalized coordinates for comfortable head movement. The track half-width is 2.25 (from `TRACK_WIDTH = 4.5`).
 
-**New imports**: `getTurtle`, `hideTurtle` from renderer.js
+We need comfortable head movement (~±0.15 normalized units) to produce enough lateral velocity to reach track edges. Target: ±0.15 input → ~±2.25 target velocity → `DIRECT_SENSITIVITY ≈ 15.0`.
 
-**In `init()` and `exitGameOver()`**: Pass turtle data to physics config via `config.turtle = getTurtle()`
+### 5. Game Start Calibration (main.js)
 
-**In game loop**:
-- Check `result.turtleCollected` → call `hideTurtle()`
-- Check `result.slowdownActive` → show/hide `#slowdown-indicator`
+After `initTracker(stream)` completes and the game transitions to `playing` state, call `calibrateCenter()`. Also call it in `exitGameOver()` when resetting the game. This ensures recalibration at every game start.
 
-**UI indicator element**: Reference `document.getElementById('slowdown-indicator')`
+## Files to Modify
 
-### 4. index.html — Indicator Element & CSS
-
-**CSS** for `#slowdown-indicator`:
-- `position: fixed; bottom: 50px; left: 50%; transform: translateX(-50%);`
-- Green/teal background, white text, rounded, semi-transparent
-- `display: none` by default, `.visible` shows it
-- `z-index: 10` (same as score), `pointer-events: none`
-
-**HTML**: `<div id="slowdown-indicator">SLOWED</div>` — placed with other HUD elements
+1. **js/tracker.js** — Replace atan2 tilt with normalized face X midpoint; add auto-calibration offset; export `calibrateCenter()`
+2. **js/physics.js** — Adjust `DIRECT_SENSITIVITY` from 8.0 to 15.0
+3. **js/main.js** — Import and call `calibrateCenter()` after tracker init and on game restart
 
 ## Key Decisions
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| Turtles per run | 1 | Keeps it rare/special, simpler |
-| Slowdown duration | 4 seconds | Middle of 3-5s range from AC |
-| Collection radius | 0.8 | Same as existing coins |
-| Speed effect | Halve FORWARD_SPEED and MAX_SPEED | Directly from AC |
-| Indicator style | Fixed bottom-center text overlay | Visible but not obstructive |
-| Turtle color | Green (0x228B22) | Distinct from red obstacles, gold coins |
+| Position source | Eye landmark X midpoint | Same landmarks already used; stable horizontal position indicator |
+| Calibration | Auto-capture on first valid frame after reset | Zero-friction UX, no explicit calibration step needed |
+| Mirroring | Negate the X offset | Webcam mirrors; negation makes physical left → negative value → ball moves left |
+| Smoothing factor | Keep 0.7 | Existing value; absolute position is at least as stable as angle |
+| DIRECT_SENSITIVITY | 15.0 (up from 8.0) | ±0.15 normalized offset × 15 = ±2.25 velocity ≈ track half-width |
+| Pitch | Keep angle-based | AC allows it; no benefit to changing |
 
 ## Scope: Single Agent
 
-All changes are tightly coupled (mesh → physics → game loop → UI). No meaningful parallelism possible.
-
-## Files Modified
-
-- `js/renderer.js` — turtle mesh, spawn, show/hide, regenerate cleanup
-- `js/physics.js` — collection check, speed modifier with timer
-- `js/main.js` — wire collection events, UI indicator, pass turtle to physics
-- `index.html` — indicator HTML element and CSS styles
+All changes are tightly coupled (tracker output → physics input → game loop wiring). Three files, minimal changes. No meaningful parallelism possible.
