@@ -138,9 +138,11 @@ function updateOnTrack(dt, tiltAngle, pitch) {
   }
 
   // Track end — wrap back to start if ball reaches the end
+  let wrapped = false;
   const halfLength = trackConfig.trackLength / 2;
   if (ball.z > halfLength) {
     ball.z = -halfLength + 1;
+    wrapped = true;
   }
 
   return {
@@ -155,6 +157,7 @@ function updateOnTrack(dt, tiltAngle, pitch) {
     coinsCollected: newlyCollected,
     turtleCollected: turtleJustCollected,
     slowdownActive,
+    wrapped,
   };
 }
 
@@ -180,7 +183,16 @@ function updateFalling(dt) {
     coinsCollected: [],
     turtleCollected: false,
     slowdownActive,
+    wrapped: false,
   };
+}
+
+export function refreshLevel(config) {
+  obstacles = config.obstacles || [];
+  coins = config.coins || [];
+  coinsCollected = new Array(coins.length).fill(false);
+  turtle = config.turtle || null;
+  turtleCollected = false;
 }
 
 export function getBallState() {
