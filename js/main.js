@@ -17,7 +17,7 @@ import {
 } from './renderer.js';
 
 import { initTracker, detectTilt, detectPitch, resetTilt } from './tracker.js';
-import { initPhysics, updatePhysics, resetBall } from './physics.js';
+import { initPhysics, updatePhysics, resetBall, refreshLevel } from './physics.js';
 
 const overlay = document.getElementById('overlay');
 const subtitle = overlay.querySelector('.subtitle');
@@ -298,6 +298,16 @@ function gameLoop(timestamp) {
     // Handle turtle collection
     if (result.turtleCollected) {
       hideTurtle();
+    }
+
+    // Handle track wrap — regenerate level with new layout
+    if (result.wrapped) {
+      regenerateLevel();
+      const newConfig = getTrackConfig();
+      newConfig.obstacles = getObstacles();
+      newConfig.coins = getCoins();
+      newConfig.turtle = getTurtle();
+      refreshLevel(newConfig);
     }
 
     // Show/hide slowdown indicator
