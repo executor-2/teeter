@@ -1,83 +1,41 @@
-# Plan: Fix Static Map After Track Wrap
+# Plan: Include hours and minutes in version timestamp with localization
 
-## Problem
+## Current State
 
-When the ball reaches the end of the track, `physics.js` wraps the ball position back to the start (`ball.z = -halfLength + 1`), but the level (obstacles, coins, turtle) is **never regenerated**. This causes:
+The `#version-info` div in `index.html` (line 296) contains a hardcoded static string:
 
-1. **Same obstacles every lap** — obstacles stay in identical positions because `regenerateLevel()` is not called on wrap.
-2. **No coins visible** — coins collected on the first pass remain hidden (their meshes have `visible = false` and the `coinsCollected` array still marks them as collected).
-3. **Turtle missing** — once collected or passed, the turtle doesn't reappear.
+```html
+<div id="version-info">v1.0.0 · Last updated: 2026-03-20</div>
+```
 
-## Root Cause
+No JavaScript currently references or modifies this element.
 
-`js/physics.js:142-144` — the track wrap logic only resets `ball.z` but does nothing to refresh the level layout or reset collection state. There is no communication back to `main.js` that a wrap occurred.
+## Approach
 
-## Solution
+1. **Change the hardcoded date to an ISO 8601 datetime string** in a `data-updated` attribute on the `#version-info` div. This keeps the source value easy for developers to update (just edit the ISO string) while separating the raw value from presentation.
 
-### Approach: Signal wrap event, regenerate in main.js
+2. **Add a small inline `<script>`** right after the div that reads the ISO string from the `data-updated` attribute and formats it using `Date.toLocaleString()` with appropriate options (date, hours, minutes — no seconds) to produce a localized, readable timestamp.
 
-The cleanest fix follows the existing pattern (similar to how `coinsCollected` and `turtleCollected` are communicated):
+3. **Set the initial text content** to just the version number as fallback; the script immediately updates it with the formatted date.
 
-1. **physics.js**: Add a `wrapped: true` flag to the return object of `updateOnTrack()` when the ball wraps around.
+### Implementation Details
 
-2. **physics.js**: Add a new exported function `refreshLevel(config)` that updates obstacles, coins, and turtle references (and resets their collection state) without resetting ball position or velocity.
+- **Source format**: ISO 8601 string with time, e.g. `2026-03-20T20:30:00Z`
+- **Formatting API**: `new Date(isoString).toLocaleString(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })` — this uses the browser's locale and timezone automatically.
+- **Fallback**: The pre-JS or `<noscript>` case will show just "v1.0.0", which is acceptable.
+- **Placement**: A small inline `<script>` tag right after the `#version-info` div to keep the logic co-located and avoid touching JS module files.
 
-3. **main.js**: When `result.wrapped` is true, call `regenerateLevel()` to create new obstacle/coin/turtle meshes, then call `refreshLevel()` with the new layout data.
+### Files Changed
 
-### Detailed Changes
+- `index.html` — Modify the `#version-info` div and add a small inline script (~6 lines).
 
-#### js/physics.js
+### No New Dependencies
 
-1. Add `wrapped` boolean tracking in `updateOnTrack()`:
-   - Set `wrapped = true` when `ball.z > halfLength` triggers the wrap.
-   - Include `wrapped` in the return object (default `false`).
-   - Also return `wrapped: false` from `updateFalling()`.
-
-2. Add new export `refreshLevel(config)`:
-   ```js
-   export function refreshLevel(config) {
-     obstacles = config.obstacles || [];
-     coins = config.coins || [];
-     coinsCollected = new Array(coins.length).fill(false);
-     turtle = config.turtle || null;
-     turtleCollected = false;
-   }
-   ```
-   This updates level data without touching ball state or slowdown timers.
-
-#### js/main.js
-
-1. Import `refreshLevel` from `physics.js`.
-2. In the game loop, after `updatePhysics()`, check `result.wrapped`:
-   ```js
-   if (result.wrapped) {
-     regenerateLevel();
-     const newConfig = getTrackConfig();
-     newConfig.obstacles = getObstacles();
-     newConfig.coins = getCoins();
-     newConfig.turtle = getTurtle();
-     refreshLevel(newConfig);
-   }
-   ```
-
-### Why not other approaches?
-
-- **Regenerate inside physics.js**: Physics shouldn't know about rendering. The existing architecture separates concerns.
-- **Just reset coinsCollected on wrap**: Would show the same layout forever (same obstacle positions). The description says "the map becomes the same" which implies it should differ.
-- **Use `initPhysics` on wrap**: Would reset ball position to start, causing a visual teleport and losing slowdown state.
-
-## File Changes Summary
-
-| File | Change |
-|------|--------|
-| `js/physics.js` | Add `wrapped` flag to return objects; add `refreshLevel()` export |
-| `js/main.js` | Import `refreshLevel`; handle `result.wrapped` by regenerating level |
+Uses only built-in browser APIs (`Date`, `toLocaleString`).
 
 ## Verification
 
-- `docker build -t teeter .` must succeed
-- After the ball reaches the end of the track and wraps, obstacles should appear in different positions
-- Coins should be visible after wrapping (fresh coins in new positions)
-- Turtle powerup should reappear after wrapping
-- Score should persist across wraps (not reset to 0)
-- Existing game-over/restart flow should still work
+- `docker build -t teeter .` succeeds.
+- The `#version-info` element in the bottom-right shows a localized date+time string (e.g., "Mar 20, 2026, 8:30 PM" in en-US) instead of just "2026-03-20".
+- The format adjusts to the user's locale/timezone.
+- The version string remains readable and unobtrusive.
