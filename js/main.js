@@ -3,7 +3,6 @@ import {
   updateBallPosition,
   updateBallRotation,
   resetBallRotation,
-  updateTrackTilt,
   updateCamera,
   render,
   getTrackConfig,
@@ -82,7 +81,6 @@ function gameLoop(timestamp) {
     // Update renderer
     updateBallPosition(result.x, result.y, result.z);
     updateBallRotation(result.vx, result.vz, dt);
-    updateTrackTilt(tiltAngle);
     updateCamera(result.z);
 
     // Handle state transitions
@@ -99,7 +97,6 @@ function gameLoop(timestamp) {
           const config = getTrackConfig();
           updateBallPosition(0, config.trackHeight / 2 + config.ballRadius, config.ballStartZ);
           updateCamera(config.ballStartZ);
-          updateTrackTilt(0);
           state = 'playing';
           resetTimer = null;
         }, 500);

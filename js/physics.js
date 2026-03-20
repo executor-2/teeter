@@ -1,6 +1,6 @@
 const GRAVITY = 9.8;
-const SENSITIVITY = 2.5;
-const FRICTION = 3.0;
+const DIRECT_SENSITIVITY = 5.0;
+const RESPONSE_RATE = 8.0;
 const FORWARD_SPEED = 2.0;
 const PITCH_SENSITIVITY = 3.0;
 const MAX_SPEED = 6.0;
@@ -37,12 +37,9 @@ export function updatePhysics(dt, tiltAngle, pitch) {
 }
 
 function updateOnTrack(dt, tiltAngle, pitch) {
-  // Lateral acceleration from head tilt
-  const ax = GRAVITY * Math.sin(tiltAngle) * SENSITIVITY;
-  ball.vx += ax * dt;
-
-  // Rolling friction
-  ball.vx *= (1 - FRICTION * dt);
+  // Direct lateral velocity from head tilt (no gravity-on-slope simulation)
+  const targetVx = tiltAngle * DIRECT_SENSITIVITY;
+  ball.vx += (targetVx - ball.vx) * RESPONSE_RATE * dt;
 
   // Forward motion modulated by pitch (forward tilt speeds up, backward slows down)
   const pitchVal = pitch || 0;

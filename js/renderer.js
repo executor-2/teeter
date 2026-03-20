@@ -7,7 +7,7 @@ const BALL_RADIUS = 0.3;
 const BALL_START_Z = -20;
 
 let scene, camera, renderer;
-let trackGroup, trackMesh, ballMesh;
+let trackMesh, ballMesh;
 let edgeLeft, edgeRight;
 
 export function initRenderer() {
@@ -45,11 +45,7 @@ export function initRenderer() {
   dirLight.shadow.camera.bottom = -30;
   scene.add(dirLight);
 
-  // Track group (for tilt rotation)
-  trackGroup = new THREE.Group();
-  scene.add(trackGroup);
-
-  // Track
+  // Track (fixed, no rotation)
   const trackGeo = new THREE.BoxGeometry(TRACK_WIDTH, TRACK_HEIGHT, TRACK_LENGTH);
   const trackMat = new THREE.MeshStandardMaterial({
     color: 0x8B7355,
@@ -59,18 +55,18 @@ export function initRenderer() {
   trackMesh = new THREE.Mesh(trackGeo, trackMat);
   trackMesh.position.set(0, 0, 0);
   trackMesh.receiveShadow = true;
-  trackGroup.add(trackMesh);
+  scene.add(trackMesh);
 
   // Edge lines for visibility
   const edgeMat = new THREE.MeshStandardMaterial({ color: 0x5a4a3a, roughness: 0.6 });
   const edgeGeo = new THREE.BoxGeometry(0.06, 0.08, TRACK_LENGTH);
   edgeLeft = new THREE.Mesh(edgeGeo, edgeMat);
   edgeLeft.position.set(-TRACK_WIDTH / 2, TRACK_HEIGHT / 2 + 0.04, 0);
-  trackGroup.add(edgeLeft);
+  scene.add(edgeLeft);
 
   edgeRight = new THREE.Mesh(edgeGeo, edgeMat);
   edgeRight.position.set(TRACK_WIDTH / 2, TRACK_HEIGHT / 2 + 0.04, 0);
-  trackGroup.add(edgeRight);
+  scene.add(edgeRight);
 
   // Ball
   const ballGeo = new THREE.SphereGeometry(BALL_RADIUS, 32, 32);
@@ -108,12 +104,6 @@ export function updateBallRotation(vx, vz, dt) {
   // Rolling rotation: x-axis for forward motion, z-axis for lateral
   ballMesh.rotation.x -= (vz / BALL_RADIUS) * dt;
   ballMesh.rotation.z += (vx / BALL_RADIUS) * dt;
-}
-
-export function updateTrackTilt(tiltAngle) {
-  // Subtle visual tilt of the track, clamped
-  const maxVisualTilt = 0.15;
-  trackGroup.rotation.z = Math.max(-maxVisualTilt, Math.min(maxVisualTilt, tiltAngle * 0.5));
 }
 
 export function updateCamera(ballZ) {
