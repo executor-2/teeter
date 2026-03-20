@@ -1,65 +1,119 @@
-# Plan: Randomize Obstacle and Coin Layout Each Run
+# Plan: Create Leaderboard with Persistent High Scores
 
-## Problem
-`seededRandom(42)` in `renderer.js` produces the same layout every run. Players memorize the course and replayability drops.
+## Overview
 
-## Approach
-Replace the hardcoded seed with `Date.now()` and introduce a `regenerateLevel()` function that tears down existing obstacle/coin meshes and creates new ones with a fresh seed. Call this during the reset flow in `main.js`.
+Add a persistent leaderboard system using browser localStorage. Introduce a `gameover` state to the existing state machine that intercepts the automatic reset flow when the ball falls. Display game-over UI with optional name entry for top-10 scores, and a leaderboard view accessible at any time.
 
-## Changes
+## Codebase Analysis
 
-### 1. renderer.js — `regenerateLevel()` function
+- **Tech stack**: Pure static HTML+JS (ES modules), Three.js v0.183.2 via CDN importmap, served by nginx in Docker
+- **State machine** (`main.js`): `loading | permission | playing | falling` → adding `gameover`
+- **Reset flow** (`main.js:121-138`): On `result.needsReset && state === 'falling'`, a 500ms `setTimeout` regenerates the level, resets physics, resets score, and sets state to `playing`
+- **Score tracking**: `score` variable in `main.js`, displayed via `#score` div
+- **Overlay system**: `#overlay` div with `.title`/`.subtitle`, toggled via `.hidden` class
+- **No existing localStorage usage**
 
-- Extract the obstacle/coin mesh creation code (lines 177–212) into a new exported function `regenerateLevel()`.
-- `regenerateLevel()` will:
-  1. Remove all existing obstacle meshes from `scene` via `scene.remove(mesh)`.
-  2. Remove all existing coin meshes from `scene` similarly.
-  3. Clear `obstacleMeshes`, `obstacleData`, `coinMeshes`, `coinData` arrays.
-  4. Create a new RNG with `seededRandom(Date.now())`.
-  5. Regenerate `obstacleData` and `coinData` using existing `generateObstacles()` / `generateCoins()`.
-  6. Create new meshes and add them to the scene (same code as current init).
-  7. Return `{ obstacles: getObstacles(), coins: getCoins() }` so the caller can update physics.
-- In `initRenderer()`, replace the inline generation block with a call to `regenerateLevel()` (DRY).
+## Architecture
 
-**Geometry/Material reuse**: Obstacle and coin geometries/materials are identical across all instances. Store them as module-level variables created once in `initRenderer()`, reuse in `regenerateLevel()`. Only dispose meshes on teardown, not shared geo/mat.
+### Files to Modify
 
-### 2. physics.js — `updateLevel()` function
+1. **`index.html`** — Add game-over overlay, name entry form, leaderboard panel, and leaderboard button. Add associated CSS styles.
+2. **`js/main.js`** — Add `gameover` state to state machine, localStorage read/write logic, wire up UI interactions.
 
-- Add exported function `updateLevel(obstacles, coins)` that:
-  1. Replaces the `obstacles` and `coins` arrays.
-  2. Resets `coinsCollected` to a fresh `Array(coins.length).fill(false)`.
-- This allows main.js to update physics collision data without a full `initPhysics()` call.
+### Files NOT Modified
 
-### 3. main.js — Call during reset
+- `js/renderer.js` — No changes needed
+- `js/physics.js` — No changes needed
+- `js/tracker.js` — No changes needed (DO NOT MODIFY per conventions)
 
-- Import `regenerateLevel` from renderer.js and `updateLevel` from physics.js.
-- In the reset timer callback (line 122–133), after `resetBall()`:
-  1. Call `const level = regenerateLevel()`.
-  2. Call `updateLevel(level.obstacles, level.coins)`.
-- This replaces the current `showAllCoins()` call (no longer needed since `regenerateLevel()` creates fresh visible coins).
+### State Machine Change
 
-### 4. main.js — Initial load
+Current flow:
+```
+playing → falling → [500ms timeout] → playing
+```
 
-- `initRenderer()` calls `regenerateLevel()` internally for the initial layout.
-- The init flow in main.js already calls `getObstacles()` and `getCoins()` after `initRenderer()` — this continues to work unchanged.
+New flow:
+```
+playing → falling → [ball falls off screen] → gameover → [name entry or brief display] → playing
+```
 
-## Memory Leak Prevention
-- Each `regenerateLevel()` call removes old meshes from scene.
-- Shared geometry and material are created once and reused — never disposed during gameplay.
-- Only mesh objects are created/destroyed per regeneration.
+The `gameover` state replaces the immediate 500ms reset timer. Instead of scheduling a reset in the `falling` state, when `result.needsReset` is true, transition to `gameover` and show the game-over UI.
 
-## Validation
-- `generateObstacles()` and `generateCoins()` are unchanged — spacing rules, safe zone, gap requirements remain intact.
-- Ball spawn position is unchanged — `resetBall()` always uses `trackConfig.ballStartZ`.
-- `Date.now()` guarantees a different seed each run (millisecond precision).
+### localStorage Schema
 
-## Testing
-- `docker build -t teeter .` must succeed (no build step — just static file copy).
-- Visual: obstacle/coin layout differs after each death/reset.
-- Gameplay: collisions, coin collection, score reset all still work.
+Key: `teeter_highscores`
+
+Value (JSON string):
+```json
+[
+  { "name": "AAA", "score": 42 },
+  { "name": "BBB", "score": 35 },
+  ...
+]
+```
+
+Array of up to 10 entries, sorted by score descending. Read/written via `JSON.parse`/`JSON.stringify`.
+
+### UI Components
+
+#### 1. Game Over Overlay (`#gameover-overlay`)
+- Centered overlay (similar to existing `#overlay` styling)
+- Shows "GAME OVER" title and final score
+- If score qualifies for top 10: shows name entry input (maxlength=15) + submit button
+- If score does not qualify: shows message briefly, then auto-resets after ~2 seconds
+- `pointer-events: auto` so user can interact with the form
+
+#### 2. Leaderboard Panel (`#leaderboard-panel`)
+- Full-screen or large centered panel overlay
+- Shows ranked list: #, Name, Score
+- Close button to dismiss
+- Accessible via a leaderboard button in the UI
+
+#### 3. Leaderboard Button (`#leaderboard-btn`)
+- Fixed position button (top-right corner)
+- Always visible during `playing` state
+- Simple text label (e.g., "Leaderboard") — no emoji assets needed
+- Opens the leaderboard panel when clicked
+
+### Key Implementation Details
+
+1. **Score qualification check**: Compare current score against the 10th entry in the sorted array (or check if fewer than 10 entries). Score of 0 does NOT qualify.
+
+2. **Name input**: HTML `<input>` with `maxlength="15"`, submit on Enter key or button click. Trim whitespace. Default to "Anonymous" if empty.
+
+3. **Game-over flow**:
+   - Qualifying score: Show name entry, wait for submit, save to localStorage, then reset
+   - Non-qualifying score: Show "GAME OVER" with final score for ~2 seconds, then auto-reset
+
+4. **Reset after game-over**: Same reset logic as current (regenerateLevel, initPhysics, resetTilt, etc.), triggered from the game-over flow completion.
+
+5. **Leaderboard during gameplay**: Button in top-right, clicking opens the leaderboard overlay. Close button dismisses it. Game continues underneath.
+
+6. **localStorage error handling**: Wrap read/write in try/catch to handle private browsing or full storage gracefully. If localStorage is unavailable, game-over flow still works — just no persistence.
+
+### Conventions to Follow
+
+- 2-space indent, single quotes, const/let (no var)
+- camelCase functions, UPPER_CASE constants
+- ES module imports
+- Match existing overlay styling (font-family: -apple-system, etc., white text on dark backgrounds)
+- No new dependencies — pure DOM manipulation
+- No npm/node — static JS only
+
+### Gotchas
+
+- The existing `#overlay` has `pointer-events: none` — the new game-over overlay needs `pointer-events: auto` for the input/button to be interactive
+- Must hide the game-over overlay before resetting to `playing` state
+- The existing reset flow uses a `setTimeout` with a `resetTimer` guard — the new `gameover` state replaces this pattern entirely for the reset case
+- The `score` variable must be captured at the moment of entering `gameover` state (before reset clears it)
+- The leaderboard button should have `z-index` above the Three.js canvas but below overlays
+- The game loop continues running during `gameover` state but should skip physics updates (game is paused)
 
 ## Scope Assessment: Single Agent
-All changes are tightly coupled across 3 files with shared interfaces. No parallel decomposition is beneficial.
+
+All changes are tightly coupled between `index.html` (UI) and `js/main.js` (logic). No parallel decomposition is beneficial — the UI and logic must be developed together.
 
 ## Sources
-No external libraries or APIs needed. All changes use existing Three.js patterns already in the codebase.
+
+No external libraries needed. Uses standard browser APIs: `localStorage`, DOM manipulation. All patterns already exist in the codebase (overlays, event listeners, state machine).
