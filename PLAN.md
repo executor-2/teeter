@@ -1,99 +1,52 @@
-# Plan: Add Turtle Slow-Down Powerup
+# Plan: Fix "No Coins on Track" Bug
 
-## Overview
+## Root Cause Analysis
 
-Add a collectible turtle-shaped powerup that halves ball speed for 4 seconds when collected. Follows the existing coin spawn/collection pattern across renderer.js, physics.js, main.js, and index.html.
+When the ball reaches the end of the track (`ball.z > halfLength` in `physics.js:142`), the ball position wraps back to the start (`ball.z = -halfLength + 1`) but the level is **not** regenerated. All previously collected coins remain hidden (`coinsCollected` array entries stay `true`, coin meshes stay `visible = false`). If the player collected all coins before reaching the track end, the wrapped track has zero collectible coins — and every subsequent wrap also has zero coins.
 
-## Codebase Analysis
+The bug manifests "occasionally" because it only triggers when the player collects **every** coin before the ball reaches the track end. If any coins are missed, they remain visible on the next pass.
 
-- **Tech stack**: Pure static HTML+JS (ES modules), Three.js v0.183.2 via CDN importmap, served by nginx in Docker
-- **Key files**: `index.html` (HTML/CSS/UI), `js/main.js` (game loop, state), `js/physics.js` (ball physics, collision), `js/renderer.js` (Three.js scene, mesh generation, RNG), `js/tracker.js` (head tracking — DO NOT MODIFY)
-- **Coin pattern**: Generated in `renderer.js` via `generateCoins(rng)`, exported via `getCoins()`, collected in `physics.js` via distance check (`COIN_COLLECT_RADIUS = 0.8`), hidden via `hideCoin(idx)` called from `main.js` game loop
-- **Speed constants**: `FORWARD_SPEED = 2.0`, `MAX_SPEED = 6.0` in physics.js
-- **RNG**: Seeded via `Date.now()` in `generateLevel()`, deterministic `seededRandom()` function
+Key code locations:
+- `js/physics.js:141-144` — ball wrap logic (no level regeneration)
+- `js/renderer.js:68-106` — `generateCoins()` function
+- `js/main.js:160-183` — `exitGameOver()` which correctly regenerates the level (but is only called on death, not track completion)
 
-## Technical Approach
+## Fix Strategy
 
-### 1. renderer.js — Turtle Mesh & Spawning
+### 1. Regenerate the level on track wrap (physics.js + main.js)
 
-**Turtle mesh** (composite Three.js primitives, grouped under `THREE.Group`):
-- Body: `SphereGeometry` scaled flat (scaleY ~0.5), dark green `0x228B22`
-- Head: smaller `SphereGeometry`, positioned at front of body
-- 4 legs: short `CylinderGeometry` positioned at corners
-- Shell detail: slightly larger `SphereGeometry` with darker color on top
+**physics.js**: When `ball.z > halfLength`, add a `trackCompleted: true` flag to the return object (alongside the existing ball position reset).
 
-**Spawn logic** — new `generateTurtle(rng, obstacles)`:
-- Pick random Z between `SAFE_ZONE_Z + 5` and `TRACK_LENGTH/2 - 3`, avoiding obstacle Z ranges
-- Pick random X within track bounds (±halfTrack - 0.5)
-- Spawn exactly 1 turtle per run
-- Place at `COIN_Y` height (same as coins)
+**main.js**: In the game loop, detect `result.trackCompleted`. When true:
+- Call `regenerateLevel()` to create new obstacles, coins, and turtle
+- Re-fetch track config, obstacles, coins, and turtle data
+- Call `initPhysics(config)` with fresh data
+- Reset ball rotation and slowdown indicator
+- **Preserve the score** (do NOT reset to 0 — the player earned those points)
 
-**Exports to add**:
-- `getTurtle()` → returns `{ x, z }` or `null`
-- `hideTurtle()` → hides the mesh
-- Update `regenerateLevel()` to clean up turtle mesh
+This mirrors the reset logic already in `exitGameOver()` but without resetting the score.
 
-### 2. physics.js — Collection & Speed Modifier
+### 2. Defensive guarantee: no zero-coin levels (renderer.js)
 
-**New state variables**:
-- `turtle` (position object or null)
-- `turtleCollected` (boolean)
-- `slowdownActive` (boolean)
-- `slowdownTimer` (float, seconds remaining)
-- `SLOWDOWN_DURATION = 4` (constant)
-- `TURTLE_COLLECT_RADIUS = 0.8`
+Add a safety check in `generateCoins()`: if the obstacles-based coin placement yields zero coins, add fallback coins in the safe zone area (between `SAFE_ZONE_Z` and the first obstacle). This prevents zero-coin tracks regardless of RNG sequence or obstacle placement.
 
-**In `initPhysics(config)`**: Accept `config.turtle`, reset slowdown state.
+The current math suggests this shouldn't happen with normal RNG (obstacle spacing of 7-9 units guarantees gaps of 5-7 for coins), but the defensive check is cheap and eliminates the theoretical possibility.
 
-**In `updateOnTrack(dt)`**:
-- Check turtle proximity (same pattern as coins) → set `turtleCollected`, activate slowdown
-- Apply speed modifier: `effectiveForward = slowdownActive ? FORWARD_SPEED / 2 : FORWARD_SPEED`, `effectiveMax = slowdownActive ? MAX_SPEED / 2 : MAX_SPEED`
-- Decrement `slowdownTimer` by `dt`; when ≤ 0, deactivate
-- Re-collecting while active: reset timer to `SLOWDOWN_DURATION` (no further stacking)
-- Return `turtleCollected`, `slowdownActive`, `slowdownTimer` in result object
+## Files to Change
 
-**In `resetBall()`**: Clear all slowdown state.
-
-### 3. main.js — Wire Collection & UI Indicator
-
-**New imports**: `getTurtle`, `hideTurtle` from renderer.js
-
-**In `init()` and `exitGameOver()`**: Pass turtle data to physics config via `config.turtle = getTurtle()`
-
-**In game loop**:
-- Check `result.turtleCollected` → call `hideTurtle()`
-- Check `result.slowdownActive` → show/hide `#slowdown-indicator`
-
-**UI indicator element**: Reference `document.getElementById('slowdown-indicator')`
-
-### 4. index.html — Indicator Element & CSS
-
-**CSS** for `#slowdown-indicator`:
-- `position: fixed; bottom: 50px; left: 50%; transform: translateX(-50%);`
-- Green/teal background, white text, rounded, semi-transparent
-- `display: none` by default, `.visible` shows it
-- `z-index: 10` (same as score), `pointer-events: none`
-
-**HTML**: `<div id="slowdown-indicator">SLOWED</div>` — placed with other HUD elements
-
-## Key Decisions
-
-| Decision | Choice | Rationale |
-|----------|--------|-----------|
-| Turtles per run | 1 | Keeps it rare/special, simpler |
-| Slowdown duration | 4 seconds | Middle of 3-5s range from AC |
-| Collection radius | 0.8 | Same as existing coins |
-| Speed effect | Halve FORWARD_SPEED and MAX_SPEED | Directly from AC |
-| Indicator style | Fixed bottom-center text overlay | Visible but not obstructive |
-| Turtle color | Green (0x228B22) | Distinct from red obstacles, gold coins |
+| File | Change |
+|------|--------|
+| `js/physics.js` | Add `trackCompleted` flag to `updateOnTrack()` return when ball wraps past track end |
+| `js/main.js` | Handle `trackCompleted` in game loop — regenerate level, re-init physics, preserve score |
+| `js/renderer.js` | Add fallback in `generateCoins()` to ensure at least 1 coin is always generated |
 
 ## Scope: Single Agent
 
-All changes are tightly coupled (mesh → physics → game loop → UI). No meaningful parallelism possible.
+All changes are tightly coupled across 3 files in a small codebase. No meaningful parallelism possible.
 
-## Files Modified
+## Testing
 
-- `js/renderer.js` — turtle mesh, spawn, show/hide, regenerate cleanup
-- `js/physics.js` — collection check, speed modifier with timer
-- `js/main.js` — wire collection events, UI indicator, pass turtle to physics
-- `index.html` — indicator HTML element and CSS styles
+- `docker build -t teeter .` must succeed
+- After collecting coins and reaching the track end, a fresh track with new coins appears
+- Score persists across track completions (not reset to 0)
+- No track should ever have zero coins
